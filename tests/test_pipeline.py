@@ -220,3 +220,31 @@ def test_actual_schema_structure_split_groups_identities_across_batches(tmp_path
     assert not {row["molecule_id"] for row in reference} & {row["molecule_id"] for row in validation}
     for row in reference + validation:
         assert row["molecule_id"] == structure_key(row["normalized_smiles"])
+
+
+def test_cross_library_split_does_not_canonicalize_references_and_reports_progress(tmp_path, monkeypatch):
+    import casmi.validation as validation_module
+
+    records = [
+        actual_training_row("reference", smiles="COC"),
+        actual_training_row("query", library="enveda-np-examples"),
+    ]
+    source = parquet(tmp_path / "train.parquet", records)
+    calls, progress = [], []
+
+    def tracked_key(smiles):
+        calls.append(smiles)
+        assert smiles != "COC", "Reference chemistry must not be processed during this split"
+        return structure_key(smiles)
+
+    monkeypatch.setattr(validation_module, "structure_key", tracked_key)
+    result = split_dataset(
+        source, tmp_path / "split", query_library="enveda-np-examples", progress=progress.append,
+    )
+    assert calls == ["CCO"]
+    assert progress == [{
+        "processed_spectra": 2, "total_spectra": 2,
+        "partitions": {"reference": 1, "validation": 1},
+    }]
+    assert pq.ParquetFile(result["paths"]["reference"]).schema_arrow == pq.ParquetFile(source).schema_arrow
+    assert "molecule_id" in pq.ParquetFile(result["paths"]["validation"]).schema_arrow.names

@@ -88,10 +88,19 @@ exclude the correct structure from that candidate database too.
 
 Split files retain labels for local scoring. If the source has no IDs, the split
 command adds a local `molecule_id` from the canonical-tautomer InChIKey14 and a
-unique `spectrum_id` from each source row's position. All spectra of an equivalent
-structure share the same local molecule ID. Existing IDs are preserved, and the
-original training file is unchanged. These IDs are only for local validation;
-competition inference retains the supplied test IDs.
+unique `spectrum_id` from each source row's position to the validation partition.
+All spectra of an equivalent structure share the same local molecule ID. Existing
+IDs are preserved, and the original training file is unchanged. These IDs are only
+for local validation; competition inference retains the supplied test IDs.
+
+Cross-library splitting leaves reference rows in their original schema and only
+canonicalizes held-out structures when validation IDs are needed. Structure-disjoint
+splitting must canonicalize all structures to assign their partition and generates
+IDs in both outputs. The CLI reports progress to stderr. In a notebook, pass
+`progress=print` to `split_dataset` for progress every approximately 100,000 spectra.
+RDKit can emit diagnostics about enumeration limits or rejected intermediate
+tautomers; these messages alone do not establish a failed run. A Python traceback
+or an incomplete output is a separate issue to investigate.
 
 Prediction reads only the query input columns, so labels are never consumed by
 inference. Use the competition scorer

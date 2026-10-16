@@ -5,6 +5,7 @@ from collections import defaultdict
 import json
 from pathlib import Path
 import time
+import sys
 
 from .chemistry import require_metric_rdkit
 from .data import SPECTRUM_COLUMNS, inspect, rows
@@ -106,7 +107,10 @@ def main(argv=None):
         if args.command == "inspect":
             result = inspect(args.parquet)
         elif args.command == "split":
-            result = split_dataset(args.train, args.output_dir, args.fraction, args.seed, args.query_library)
+            result = split_dataset(
+                args.train, args.output_dir, args.fraction, args.seed, args.query_library,
+                progress=lambda status: print(json.dumps(status), file=sys.stderr, flush=True),
+            )
         elif args.command == "build-library":
             config = SearchConfig(**{
                 field: getattr(args, field) for field in SearchConfig.__dataclass_fields__

@@ -11,7 +11,7 @@ import numpy as np
 from rdkit import rdBase
 
 from .chemistry import neutral_mass, require_metric_rdkit, structure_info
-from .data import SPECTRUM_COLUMNS, rows, validate_spectrum
+from .data import REFERENCE_COLUMNS, rows, validate_spectrum
 from .spectra import SearchConfig, cosine, prepare
 
 SCHEMA_VERSION = 1
@@ -43,10 +43,10 @@ def build_library(train_path, output, config: SearchConfig) -> dict:
                     mode TEXT NOT NULL, mzs BLOB NOT NULL, weights BLOB NOT NULL
                 );
             """)
-            for row in rows(train_path, SPECTRUM_COLUMNS + ["normalized_smiles"]):
+            for row in rows(train_path, REFERENCE_COLUMNS + ["normalized_smiles"]):
                 counts["input_spectra"] += 1
                 try:
-                    validate_spectrum(row)
+                    validate_spectrum(row, require_ids=False)
                     key, smiles, mass = structure_info(row["normalized_smiles"])
                     mz, weights = prepare(
                         row["ms2_mzs"], row["ms2_normalized_intensities"],

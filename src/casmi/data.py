@@ -7,10 +7,11 @@ import math
 
 import pyarrow.parquet as pq
 
-SPECTRUM_COLUMNS = [
-    "molecule_id", "spectrum_id", "ms2_mzs", "ms2_normalized_intensities",
+REFERENCE_COLUMNS = [
+    "ms2_mzs", "ms2_normalized_intensities",
     "adduct", "ionization_mode", "precursor_mz",
 ]
+SPECTRUM_COLUMNS = ["molecule_id", "spectrum_id", *REFERENCE_COLUMNS]
 
 
 def rows(path: str | Path, columns: list[str], batch_size: int = 4096) -> Iterator[dict]:
@@ -22,9 +23,12 @@ def rows(path: str | Path, columns: list[str], batch_size: int = 4096) -> Iterat
         yield from batch.to_pylist()
 
 
-def validate_spectrum(row: dict) -> None:
-    for name in ["molecule_id", "spectrum_id", "adduct", "ionization_mode"]:
-        if not isinstance(row[name], str) or not row[name].strip():
+def validate_spectrum(row: dict, *, require_ids: bool = True) -> None:
+    names = ["adduct", "ionization_mode"]
+    if require_ids:
+        names += ["molecule_id", "spectrum_id"]
+    for name in names:
+        if not isinstance(row.get(name), str) or not row[name].strip():
             raise ValueError(f"Missing or invalid {name}")
     if row["ionization_mode"] not in {"positive", "negative"}:
         raise ValueError(f"Invalid ionization_mode: {row['ionization_mode']!r}")

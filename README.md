@@ -41,9 +41,11 @@ uv run --locked casmi inspect data/raw/test.parquet
 ```
 
 This streams category counts and prints the schema column names and row count.
-The baseline reads the shared spectrum columns plus `normalized_smiles` for
-indexing. Extra columns are allowed. The pasted description has inconsistent
-column/adduct counts, so actual file schemas are the authority.
+The actual training file has 18 columns and no `molecule_id` or `spectrum_id`.
+Reference indexing reads only peak arrays, adduct, mode, precursor m/z, and
+`normalized_smiles`. Use `inchikey14` to group structures during initial exploration.
+Test inference uses the anonymous `molecule_id` and `spectrum_id` supplied with
+the test data. Extra columns are allowed.
 
 ## Validate before using the full training set
 
@@ -84,8 +86,15 @@ Future class-2 evaluation must retain held-out structures in an external candida
 database while withholding their reference spectra. Class-3 evaluation must
 exclude the correct structure from that candidate database too.
 
-Split files retain labels for local scoring. Prediction reads only shared input
-columns, so labels are never consumed by inference. Use the competition scorer
+Split files retain labels for local scoring. If the source has no IDs, the split
+command adds a local `molecule_id` from the canonical-tautomer InChIKey14 and a
+unique `spectrum_id` from each source row's position. All spectra of an equivalent
+structure share the same local molecule ID. Existing IDs are preserved, and the
+original training file is unchanged. These IDs are only for local validation;
+competition inference retains the supplied test IDs.
+
+Prediction reads only the query input columns, so labels are never consumed by
+inference. Use the competition scorer
 as the authority once its metric notebook is available; local evaluation currently
 implements the pasted description, not verified parity with that notebook.
 

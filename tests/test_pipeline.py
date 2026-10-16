@@ -34,6 +34,23 @@ def parquet(path, records):
     return path
 
 
+def actual_training_row(identifier, smiles="CCO", library="reference"):
+    """Match the user's observed 18-column schema, without anonymous IDs."""
+    row = spectrum(identifier, smiles)
+    del row["molecule_id"]
+    del row["spectrum_id"]
+    row.update({
+        "ingest_lib": library, "inchikey": structure_key(smiles) + "-TESTKEY",
+        "inchikey14": structure_key(smiles), "molecular_formula": "C2H6O",
+        "instrument_type": "timsTOF", "adduct_orig": "[M+H]+",
+        "precursor_error_ppm": 0.0, "num_peaks": 3,
+        "base_peak_intensity": 10000.0, "collision_energy_ev": [20.0],
+        "collision_energy_orig": "20", "collision_energy_orig_units": "eV",
+    })
+    assert len(row) == 18
+    return row
+
+
 def test_end_to_end_parquet_to_submission_and_score(tmp_path):
     train = parquet(tmp_path / "train.parquet", [
         spectrum("ethanol_1"),
@@ -155,3 +172,51 @@ def test_kaggle_notebook_code_cells_execute_with_local_fixture(tmp_path):
     assert executed.returncode == 0, executed.stdout + executed.stderr
     guesses = read_submission(tmp_path / "submission.csv", {"unknown"})
     assert structure_key(guesses["unknown"][0]) == structure_key("CCO")
+
+
+def test_reference_index_accepts_actual_training_schema_without_ids(tmp_path):
+    source = parquet(tmp_path / "train.parquet", [actual_training_row("a")])
+    index = tmp_path / "library.sqlite"
+    assert build_library(source, index, SearchConfig())["counts"]["indexed_spectra"] == 1
+    query = spectrum("anonymous_1")
+    del query["normalized_smiles"]
+    test = parquet(tmp_path / "test.parquet", [query])
+    output = tmp_path / "submission.csv"
+    assert predict_file(index, test, output)["molecules_without_spectral_match"] == 0
+    guesses = read_submission(output, {"anonymous"})
+    assert structure_key(guesses["anonymous"][0]) == structure_key("CCO")
+
+
+def test_actual_schema_cross_library_split_can_predict_and_evaluate(tmp_path):
+    records = [
+        actual_training_row("reference"),
+        actual_training_row("query1", library="enveda-np-examples"),
+        actual_training_row("query2", library="enveda-np-examples"),
+    ]
+    source = parquet(tmp_path / "train.parquet", records)
+    original_schema = pq.ParquetFile(source).schema_arrow
+    split = split_dataset(source, tmp_path / "split", query_library="enveda-np-examples")
+    assert split["generated_id_columns"] == ["molecule_id", "spectrum_id"]
+    reference, validation = split["paths"]["reference"], split["paths"]["validation"]
+    query_rows = pq.read_table(validation).to_pylist()
+    assert len({row["molecule_id"] for row in query_rows}) == 1
+    assert len({row["spectrum_id"] for row in query_rows}) == 2
+    assert pq.ParquetFile(source).schema_arrow == original_schema
+    index = tmp_path / "library.sqlite"
+    build_library(reference, index, SearchConfig())
+    output = tmp_path / "submission.csv"
+    assert predict_file(index, validation, output)["molecules"] == 1
+    assert evaluate_files(output, validation)["mrr_at_25"] == 1.0
+
+
+def test_actual_schema_structure_split_groups_identities_across_batches(tmp_path):
+    # More than one 4096-row batch verifies generated IDs use global positions.
+    records = [actual_training_row(str(i), "C" * (i % 20 + 1)) for i in range(4100)]
+    source = parquet(tmp_path / "train.parquet", records)
+    split = split_dataset(source, tmp_path / "split", fraction=0.5)
+    reference = pq.read_table(split["paths"]["reference"]).to_pylist()
+    validation = pq.read_table(split["paths"]["validation"]).to_pylist()
+    assert len({row["spectrum_id"] for row in reference + validation}) == 4100
+    assert not {row["molecule_id"] for row in reference} & {row["molecule_id"] for row in validation}
+    for row in reference + validation:
+        assert row["molecule_id"] == structure_key(row["normalized_smiles"])

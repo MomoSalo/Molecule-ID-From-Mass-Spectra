@@ -19,6 +19,10 @@ def split_dataset(source, output_dir, fraction=0.1, seed=42, query_library=None)
         raise ValueError("Split requires training labels")
     if query_library is not None and "ingest_lib" not in parquet.schema_arrow.names:
         raise ValueError("Cross-library split requires ingest_lib")
+    schema = parquet.schema_arrow
+    generated_ids = [name for name in ["molecule_id", "spectrum_id"] if name not in schema.names]
+    for name in generated_ids:
+        schema = schema.append(pa.field(name, pa.string()))
     destination = Path(output_dir)
     # Never replace an existing experiment directory.
     destination.mkdir(parents=True, exist_ok=False)
@@ -27,21 +31,31 @@ def split_dataset(source, output_dir, fraction=0.1, seed=42, query_library=None)
     try:
         with ExitStack() as stack:
             writers = {
-                name: stack.enter_context(pq.ParquetWriter(path, parquet.schema_arrow))
+                name: stack.enter_context(pq.ParquetWriter(path, schema))
                 for name, path in paths.items()
             }
+            row_offset = 0
             for batch in parquet.iter_batches(batch_size=4096):
                 labels = batch.column(batch.schema.get_field_index("normalized_smiles")).to_pylist()
+                keys = [structure_key(label) for label in labels]
                 if query_library is not None:
                     libraries = batch.column(batch.schema.get_field_index("ingest_lib")).to_pylist()
                     selected = [value == query_library for value in libraries]
                 else:
                     selected = []
-                    for label in labels:
-                        key = structure_key(label)
+                    for key in keys:
                         digest = hashlib.sha256(f"{seed}:{key}".encode()).digest()
                         selected.append(int.from_bytes(digest[:8], "big") / 2**64 < fraction)
                 table = pa.Table.from_batches([batch])
+                # Raw training spectra have no anonymous test IDs. Assign local
+                # validation IDs without altering the input Parquet file.
+                if "molecule_id" in generated_ids:
+                    table = table.append_column("molecule_id", pa.array(keys, type=pa.string()))
+                if "spectrum_id" in generated_ids:
+                    table = table.append_column("spectrum_id", pa.array([
+                        f"local_spectrum_{row_offset + i}" for i in range(len(batch))
+                    ], type=pa.string()))
+                row_offset += len(batch)
                 for name, mask in [
                     ("validation", selected), ("reference", [not value for value in selected]),
                 ]:
@@ -60,5 +74,6 @@ def split_dataset(source, output_dir, fraction=0.1, seed=42, query_library=None)
         "mode": "cross_library" if query_library else "structure_disjoint",
         "seed": seed, "fraction": fraction if query_library is None else None,
         "query_library": query_library, "spectra": counts,
+        "generated_id_columns": generated_ids,
         "paths": {name: str(path) for name, path in paths.items()},
     }

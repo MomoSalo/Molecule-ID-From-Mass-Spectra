@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "casmi-baseline"
+version = "0.1.0"
+description = "Offline spectral-retrieval baseline for Enveda CASMI 2026"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26,<3",
+  "pyarrow>=17,<24",
+  "rdkit==2026.3.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+casmi = "casmi.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

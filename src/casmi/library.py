@@ -6,8 +6,10 @@ import json
 from pathlib import Path
 import sqlite3
 import statistics
+from typing import Callable
 
 import numpy as np
+import pyarrow.dataset as ds
 from rdkit import rdBase
 
 from .chemistry import neutral_mass, require_metric_rdkit, structure_info
@@ -17,8 +19,23 @@ from .spectra import SearchConfig, cosine, prepare
 SCHEMA_VERSION = 1
 
 
-def build_library(train_path, output, config: SearchConfig) -> dict:
+def build_library(
+    train_path, output, config: SearchConfig, *, include_libraries=None,
+    exclude_libraries=None, max_spectra: int | None = None,
+    progress: Callable[[dict], None] | None = None,
+) -> dict:
     require_metric_rdkit()
+    if isinstance(include_libraries, str) or isinstance(exclude_libraries, str):
+        raise ValueError("Library selection must be a list of library names")
+    included, excluded = set(include_libraries or []), set(exclude_libraries or [])
+    if max_spectra is not None and max_spectra < 1:
+        raise ValueError("max_spectra must be positive")
+    selection = None
+    if included:
+        selection = ds.field("ingest_lib").isin(sorted(included))
+    if excluded:
+        keep = ~ds.field("ingest_lib").isin(sorted(excluded))
+        selection = keep if selection is None else selection & keep
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite library: {output}")
@@ -43,8 +60,13 @@ def build_library(train_path, output, config: SearchConfig) -> dict:
                     mode TEXT NOT NULL, mzs BLOB NOT NULL, weights BLOB NOT NULL
                 );
             """)
-            for row in rows(train_path, REFERENCE_COLUMNS + ["normalized_smiles"]):
+            for row in rows(
+                train_path, REFERENCE_COLUMNS + ["normalized_smiles"],
+                filter_expression=selection,
+            ):
                 counts["input_spectra"] += 1
+                if progress is not None and counts["input_spectra"] % 10_000 == 0:
+                    progress({"phase": "reading", "counts": dict(counts)})
                 try:
                     validate_spectrum(row, require_ids=False)
                     key, smiles, mass = structure_info(row["normalized_smiles"])
@@ -69,8 +91,12 @@ def build_library(train_path, output, config: SearchConfig) -> dict:
                 counts["indexed_spectra"] += 1
                 if counts["input_spectra"] % 10_000 == 0:
                     db.commit()
+                if max_spectra is not None and counts["indexed_spectra"] >= max_spectra:
+                    break
             if not counts["indexed_spectra"]:
                 raise ValueError("No usable reference spectra were found")
+            if progress is not None:
+                progress({"phase": "creating_indexes", "counts": dict(counts)})
             db.executescript("""
                 CREATE INDEX spectra_lookup ON spectra(adduct, mode, precursor_mz);
                 CREATE INDEX structures_mass ON structures(neutral_mass);
@@ -81,6 +107,11 @@ def build_library(train_path, output, config: SearchConfig) -> dict:
                 "config": config.to_dict(), "counts": dict(counts),
                 "source": str(Path(train_path).resolve()),
                 "source_bytes": Path(train_path).stat().st_size,
+                "selection": {
+                    "include_libraries": sorted(included),
+                    "exclude_libraries": sorted(excluded),
+                    "max_spectra": max_spectra,
+                },
             }
             db.execute("INSERT INTO metadata VALUES ('build', ?)", (json.dumps(metadata),))
             db.commit()
@@ -90,6 +121,8 @@ def build_library(train_path, output, config: SearchConfig) -> dict:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+    if progress is not None:
+        progress({"phase": "complete", "counts": dict(counts)})
     return metadata
 
 

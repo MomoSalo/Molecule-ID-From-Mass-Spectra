@@ -13,7 +13,7 @@ from .evaluation import evaluate_files
 from .library import SpectralLibrary, build_library
 from .spectra import SearchConfig
 from .submission import read_submission, write_submission
-from .validation import split_dataset
+from .validation import extract_validation, split_dataset
 
 
 def predict_file(library, test, output, top_k=25, report=None) -> dict:
@@ -74,6 +74,11 @@ def parser():
     split.add_argument("--seed", type=int, default=42)
     split.add_argument("--query-library", help="Hold out this library's spectra instead of structures")
 
+    extract = commands.add_parser("extract-validation", help="Write held-out queries without copying references")
+    extract.add_argument("--train", required=True)
+    extract.add_argument("--output", required=True)
+    extract.add_argument("--query-library", default="enveda-np-examples")
+
     build = commands.add_parser("build-library", help="Build an indexed SQLite reference library")
     build.add_argument("--train", required=True)
     build.add_argument("--output", required=True)
@@ -83,6 +88,9 @@ def parser():
     build.add_argument("--intensity-floor", type=float, default=0.001)
     build.add_argument("--max-peaks", type=int, default=128)
     build.add_argument("--min-matched-peaks", type=int, default=3)
+    build.add_argument("--include-library", action="append", help="Repeat to select reference libraries")
+    build.add_argument("--exclude-library", action="append", help="Repeat to exclude held-out libraries")
+    build.add_argument("--max-spectra", type=int, help="Cap indexed spectra for a small, biased smoke test")
 
     predict = commands.add_parser("predict", help="Combine all spectra per molecule and write a submission")
     predict.add_argument("--library", required=True)
@@ -106,6 +114,8 @@ def main(argv=None):
     try:
         if args.command == "inspect":
             result = inspect(args.parquet)
+        elif args.command == "extract-validation":
+            result = extract_validation(args.train, args.output, args.query_library)
         elif args.command == "split":
             result = split_dataset(
                 args.train, args.output_dir, args.fraction, args.seed, args.query_library,
@@ -115,7 +125,12 @@ def main(argv=None):
             config = SearchConfig(**{
                 field: getattr(args, field) for field in SearchConfig.__dataclass_fields__
             })
-            result = build_library(args.train, args.output, config)
+            result = build_library(
+                args.train, args.output, config,
+                include_libraries=args.include_library, exclude_libraries=args.exclude_library,
+                max_spectra=args.max_spectra,
+                progress=lambda status: print(json.dumps(status), file=sys.stderr, flush=True),
+            )
         elif args.command == "predict":
             result = predict_file(args.library, args.test, args.output, args.top_k, args.report)
         elif args.command == "evaluate":

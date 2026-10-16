@@ -6,9 +6,54 @@ from pathlib import Path
 from typing import Callable
 
 import pyarrow as pa
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from .chemistry import require_metric_rdkit, structure_key
+
+
+def extract_validation(source, output, query_library="enveda-np-examples") -> dict:
+    """Write only held-out queries, without copying or canonicalizing references."""
+    require_metric_rdkit()
+    dataset = ds.dataset(source, format="parquet")
+    if not {"ingest_lib", "normalized_smiles"} <= set(dataset.schema.names):
+        raise ValueError("Validation extraction requires ingest_lib and normalized_smiles")
+    output = Path(output)
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite validation file: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(output.name + ".building")
+    with temporary.open("xb"):
+        pass
+    schema = dataset.schema
+    generated = [name for name in ["molecule_id", "spectrum_id"] if name not in schema.names]
+    for name in generated:
+        schema = schema.append(pa.field(name, pa.string()))
+    count = 0
+    try:
+        with pq.ParquetWriter(temporary, schema) as writer:
+            for batch in dataset.to_batches(
+                filter=ds.field("ingest_lib") == query_library, batch_size=4096,
+            ):
+                if not len(batch):
+                    continue
+                table = pa.Table.from_batches([batch])
+                if "molecule_id" in generated:
+                    keys = [structure_key(label) for label in table["normalized_smiles"].to_pylist()]
+                    table = table.append_column("molecule_id", pa.array(keys, type=pa.string()))
+                if "spectrum_id" in generated:
+                    table = table.append_column("spectrum_id", pa.array([
+                        f"local_query_{count + i}" for i in range(len(table))
+                    ], type=pa.string()))
+                writer.write_table(table)
+                count += len(table)
+        if not count:
+            raise ValueError(f"No validation spectra found for library {query_library!r}")
+        temporary.rename(output)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return {"path": str(output), "spectra": count, "query_library": query_library}
 
 
 def split_dataset(

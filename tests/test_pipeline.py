@@ -15,7 +15,7 @@ from casmi.evaluation import evaluate_files
 from casmi.library import SpectralLibrary, build_library
 from casmi.spectra import SearchConfig
 from casmi.submission import read_submission
-from casmi.validation import split_dataset
+from casmi.validation import extract_validation, split_dataset
 
 
 def spectrum(identifier, smiles="CCO", mzs=None, adduct="[M+H]+", mass=46.041864812):
@@ -248,3 +248,66 @@ def test_cross_library_split_does_not_canonicalize_references_and_reports_progre
     }]
     assert pq.ParquetFile(result["paths"]["reference"]).schema_arrow == pq.ParquetFile(source).schema_arrow
     assert "molecule_id" in pq.ParquetFile(result["paths"]["validation"]).schema_arrow.names
+
+
+def test_extract_only_queries_and_filtered_index_work_end_to_end(tmp_path, monkeypatch):
+    import casmi.validation as validation_module
+    import casmi.library as library_module
+
+    records = [
+        actual_training_row("excluded", smiles="COC", library="enveda-180"),
+        actual_training_row("reference", library="gnps"),
+        actual_training_row("query1", library="enveda-np-examples"),
+        actual_training_row("query2", library="enveda-np-examples"),
+    ]
+    source = parquet(tmp_path / "train.parquet", records)
+    validation = tmp_path / "validation.parquet"
+    original_info = library_module.structure_info
+    calls = []
+
+    def tracked_key(smiles):
+        assert smiles == "CCO", "Extraction must not canonicalize reference structures"
+        return structure_key(smiles)
+
+    monkeypatch.setattr(validation_module, "structure_key", tracked_key)
+    result = extract_validation(source, validation)
+    assert result["spectra"] == 2
+    assert pq.read_table(validation)["ingest_lib"].to_pylist() == ["enveda-np-examples"] * 2
+    assert not (tmp_path / "reference.parquet").exists()
+
+    def tracked_info(smiles):
+        calls.append(smiles)
+        return original_info(smiles)
+
+    monkeypatch.setattr(library_module, "structure_info", tracked_info)
+    index = tmp_path / "library.sqlite"
+    progress = []
+    metadata = build_library(
+        source, index, SearchConfig(), include_libraries=["gnps", "enveda-np-examples"],
+        exclude_libraries=["enveda-np-examples"], progress=progress.append,
+    )
+    assert calls == ["CCO"]
+    assert metadata["counts"]["indexed_spectra"] == 1
+    assert metadata["selection"]["exclude_libraries"] == ["enveda-np-examples"]
+    assert progress[-1]["phase"] == "complete"
+    output = tmp_path / "submission.csv"
+    assert predict_file(index, validation, output)["molecules"] == 1
+    assert evaluate_files(output, validation)["mrr_at_25"] == 1.0
+
+
+def test_reference_cap_and_empty_extraction_preserve_existing_files(tmp_path):
+    source = parquet(tmp_path / "train.parquet", [
+        actual_training_row("a", library="gnps"),
+        actual_training_row("b", library="gnps"),
+    ])
+    index = tmp_path / "library.sqlite"
+    result = build_library(source, index, SearchConfig(), max_spectra=1)
+    assert result["counts"]["indexed_spectra"] == 1
+    assert result["selection"]["max_spectra"] == 1
+    validation = tmp_path / "missing.parquet"
+    with pytest.raises(ValueError, match="No validation spectra"):
+        extract_validation(source, validation)
+    assert not validation.exists()
+    assert not validation.with_name("missing.parquet.building").exists()
+    with pytest.raises(ValueError, match="positive"):
+        build_library(source, tmp_path / "invalid.sqlite", SearchConfig(), max_spectra=0)

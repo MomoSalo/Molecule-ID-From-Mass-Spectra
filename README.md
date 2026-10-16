@@ -49,6 +49,62 @@ the test data. Extra columns are allowed.
 
 ## Validate before using the full training set
 
+### Quick start: avoid copying all references
+
+For initial development, extract only the 1,184 held-out natural-product spectra,
+then build a small reference index directly from the original training file.
+PyArrow filters by source library before rows are converted to Python objects;
+only selected reference structures are canonicalized and indexed.
+
+```bash
+uv run --locked casmi extract-validation --train data/raw/train.parquet \
+  --output data/splits/natural-product-queries.parquet
+uv run --locked casmi build-library --train data/raw/train.parquet \
+  --include-library gnps --max-spectra 5000 \
+  --output artifacts/gnps-smoke.sqlite
+uv run --locked casmi predict --library artifacts/gnps-smoke.sqlite \
+  --test data/splits/natural-product-queries.parquet --output outputs/gnps-smoke.csv
+uv run --locked casmi evaluate --submission outputs/gnps-smoke.csv \
+  --labels data/splits/natural-product-queries.parquet
+```
+
+The cap selects the first usable spectra in source order, **not a representative
+random sample**. This is a functional smoke test; reference coverage will be lower
+and scores must not be compared directly with full-library validation. Remove
+`--max-spectra` and use a new index/output path to evaluate all GNPS references.
+Other libraries can be added with repeated `--include-library` options. Candidate
+availability among all libraries does not imply availability in a small subset.
+
+To build the full reference library without a second reference Parquet copy:
+
+```bash
+uv run --locked casmi build-library --train data/raw/train.parquet \
+  --exclude-library enveda-np-examples --output artifacts/full-validation.sqlite
+```
+
+Do not include the held-out library in its own reference index. Include/exclude
+filters combine by intersection (exclusions take precedence). Build metadata records
+library selections and any cap, and the CLI reports indexing progress. Full indexing
+still requires chemical processing of the included structures; the fast path avoids
+unnecessary work rather than promising a fixed runtime on Kaggle.
+
+In notebooks, the equivalent functions are:
+
+```python
+from casmi.validation import extract_validation
+from casmi.library import build_library
+from casmi.spectra import SearchConfig
+
+extract_validation(train_path, "/kaggle/working/queries.parquet")
+build_library(
+    train_path, "/kaggle/working/gnps-smoke.sqlite", SearchConfig(),
+    include_libraries=["gnps"], max_spectra=5000, progress=print,
+)
+```
+
+The older split command below remains useful when both standalone Parquet
+partitions are desired. It is not required for cross-library retrieval validation.
+
 ### Cross-library spectral retrieval
 
 Hold out `enveda-np-examples` as queries and use other libraries as references.

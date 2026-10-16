@@ -6,6 +6,7 @@ from typing import Iterator
 import math
 
 import pyarrow.parquet as pq
+import pyarrow.dataset as ds
 
 REFERENCE_COLUMNS = [
     "ms2_mzs", "ms2_normalized_intensities",
@@ -14,12 +15,20 @@ REFERENCE_COLUMNS = [
 SPECTRUM_COLUMNS = ["molecule_id", "spectrum_id", *REFERENCE_COLUMNS]
 
 
-def rows(path: str | Path, columns: list[str], batch_size: int = 4096) -> Iterator[dict]:
+def rows(
+    path: str | Path, columns: list[str], batch_size: int = 4096, *, filter_expression=None,
+) -> Iterator[dict]:
     source = pq.ParquetFile(path)
     missing = set(columns) - set(source.schema_arrow.names)
     if missing:
         raise ValueError(f"{path}: missing columns: {sorted(missing)}")
-    for batch in source.iter_batches(batch_size=batch_size, columns=columns):
+    if filter_expression is None:
+        batches = source.iter_batches(batch_size=batch_size, columns=columns)
+    else:
+        batches = ds.dataset(path, format="parquet").to_batches(
+            batch_size=batch_size, columns=columns, filter=filter_expression,
+        )
+    for batch in batches:
         yield from batch.to_pylist()
 
 
